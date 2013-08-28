@@ -31,11 +31,24 @@ chi-square feature selection:
 >>> classif = SklearnClassifier(pipeline)
 
 (Such a classifier could be trained on word counts for text classification.)
+
+The version of this module in NLTK 2.0.4 does not support lazy feature
+extraction.
+
+Lazy feature extraction allows memory usage to be reduced by storing features
+only when they're used, meaning the entire feature set does not need to be
+stored in memory. See http://nltk.org/api/nltk.classify.html#nltk.classify.util.apply_features
+for more information.
+
+In this version, SklearnClassifier.train has been modified to use the iterator
+protocol, rather than storing all extracted features in memory.
 """
 
 from nltk.classify.api import ClassifierI
 from nltk.probability import DictionaryProbDist
 from scipy.sparse import coo_matrix
+from itertools import imap
+from operator import itemgetter
 
 try:
     import numpy as np
@@ -82,14 +95,28 @@ class SklearnClassifier(ClassifierI):
         """
         Train (fit) the scikit-learn estimator.
 
+        Respect lazy feature extraction.
+
+        >>> toks = [("token 1", True), ("token 2", False)]
+        >>> labeled_featuresets = nltk.classify.util.apply_features(feature_func, toks, labeled=True)
+        >>> SklearnClassifier.train(labeled_featuresets)
+
+        In the above example the results of `feature_func("token 1")` and
+        `feature_func("token 2")` need not both be stored in memory.
+
         :param labeled_featuresets: A list of classified featuresets,
             i.e., a list of tuples ``(featureset, label)``.
+
+        :type labeled_featuresets: iterator
         """
 
         self._feature_index = {}
         self._index_label = []
         self._label_index = {}
 
+        # Keep track of iterations so don't need to calculate length
+        # again later.
+        self._labeled_featuresets_len = 0
         for fs, label in labeled_featuresets:
             for f in fs.iterkeys():
                 if f not in self._feature_index:
@@ -97,8 +124,14 @@ class SklearnClassifier(ClassifierI):
             if label not in self._label_index:
                 self._index_label.append(label)
                 self._label_index[label] = len(self._label_index)
+            self._labeled_featuresets_len += 1
 
-        featuresets, labels = zip(*labeled_featuresets)
+        # zip greedily consumes labeled_featuresets, all feature sets are stored
+        # in `featuresets` and passed to convert
+        # featuresets, labels = zip(*labeled_featuresets)
+        featuresets = imap(itemgetter(0), labeled_featuresets)
+        labels = imap(itemgetter(1), labeled_featuresets)
+
         X = self._convert(featuresets)
         y = np.array([self._label_index[l] for l in labels])
 
@@ -135,8 +168,8 @@ class SklearnClassifier(ClassifierI):
     def _featuresets_to_array(self, featuresets):
         """Convert featureset to Numpy array."""
 
-        X = np.zeros((len(featuresets), len(self._feature_index)),
-                     dtype=self._dtype)
+        X = np.zeros((self._labeled_featuresets_len, len(self._feature_index)),
+            dtype=self._dtype)
 
         for i, fs in enumerate(featuresets):
             for f, v in fs.iteritems():
